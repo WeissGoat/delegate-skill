@@ -1,0 +1,29 @@
+{
+  "default": ["deepseek", "gemini"],
+  "profiles": {
+    "deepseek": {
+      "engine": "codex",
+      "model": "deepseek-4.1-flash",
+      "note": "free on the relay; the everyday worker"
+    },
+    "gemini": {
+      "engine": "codex",
+      "model": "gemini-3.8-flash-high",
+      "note": "free on the relay; often 429, so it is the fallback"
+    },
+    "deepseek-pro": {
+      "engine": "codex",
+      "model": "deepseek-v4-pro",
+      "note": "slower, for briefs that need more reasoning"
+    },
+    "codex": {
+      "engine": "codex",
+      "note": "whatever ~/.codex/config.toml sets as the model"
+    },
+    "haiku": {
+      "engine": "claude",
+      "model": "haiku",
+      "note": "Claude Code headless; spends Claude quota"
+    }
+  }
+}
