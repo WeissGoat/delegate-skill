@@ -24,7 +24,7 @@ description: Hand a long, mechanical, well-specified task to a cheaper worker ag
 
 ```bash
 python <skill>/scripts/delegate.py profiles     # 列出引擎、模型、登记的组合、别名，以及 CLI 在不在
-python <skill>/scripts/delegate.py probe        # 默认链上每个组合发一句话，看谁现在能用（约 10–60 秒）
+python <skill>/scripts/delegate.py probe        # 每个登记的组合发一句话，看谁现在能用；--profile 只测指定的
 ```
 
 profile 就是 **`壳/模型`**：壳（引擎）负责跑 agent 循环、调工具，模型负责想。两者独立，任意组合：
@@ -34,16 +34,16 @@ profile 就是 **`壳/模型`**：壳（引擎）负责跑 agent 循环、调工
 - `profiles.json` 的 `profiles` 只登记**某个组合需要的特殊处理**，例如 `codex/gemini` 要换短系统提示。
 - 旧名字是别名：`deepseek`=`codex/deepseek`，`gemini`=`codex/gemini`，`deepseek-pro`，`codex`=`codex/default`（用 Codex 配置里的模型），`haiku`=`claude/haiku`，`hermes`=`hermes/gemini`。
 
-默认链 `codex/deepseek → codex/gemini → hermes/gemini`：遇到 429、CLI 缺失或没有回答时换下一个。失败有两类，换法不同：
+**不写 `--profile` 时只用 `codex/deepseek` 一个**，失败不会自动换。任务更适合别的组合时（见下表），用 `--profile` 写明。想要备选时写成逗号分隔的链，前一个遇到 429、CLI 缺失或没有回答就换下一个。失败有两类，换法不同：
 
-- **模型那边**（中转站限流、额度）：换模型，所以第二个是同一个壳换 Gemini。
-- **壳本身**（Codex 升级坏了、没装）：换壳，所以最后一个连壳带模型一起换。
+- **模型那边**（中转站限流、额度）：同一个壳换模型，例如 `--profile codex/deepseek,codex/gemini`。
+- **壳本身**（Codex 升级坏了、没装）：换壳，例如在链尾加 `hermes/gemini`（只读任务会跳过它）。
 
-都在用户的中转站上免费。
+除了 `claude/haiku`，都在用户的中转站上免费。
 
 | 组合 | 特点（2026-10-17 实测） | 什么时候用 |
 |---|---|---|
-| `codex/deepseek` | 快：同一份只读核对 88 秒、8 次 shell 调用，命令会合并着跑；对含糊的地方会讨论口径；数字偶尔给概数（"10+"） | 默认。走查、复跑、日志排查、扫参 |
+| `codex/deepseek` | 快：同一份只读核对 88 秒、8 次 shell 调用，命令会合并着跑；对含糊的地方会讨论口径；数字偶尔给概数（"10+"） | 首选。走查、复跑、日志排查、扫参 |
 | `codex/gemini` | 慢：同一份核对 416 秒、41 次 shell 调用，一条一条地查；更穷举、更字面，计数精确，还多查了 brief 没点名的路径 | 要逐项穷举、精确计数的清单核对；DeepSeek 结论可疑时做第二意见 |
 | `codex/deepseek-pro` | 推理更多，更慢 | brief 需要多步推理 |
 | `claude/haiku` | Claude Code headless，花 Claude 额度 | 别的都不能用时 |
@@ -58,7 +58,7 @@ profile 就是 **`壳/模型`**：壳（引擎）负责跑 agent 循环、调工
   - 从 Claude 桌面版里装时要加 `-HermesHome C:\Users\<你>\.hermes`。原因：桌面版是 MSIX 应用，它启动的进程写进 `AppData\Local` 的东西会被重定向到应用自己的目录，装完在应用外找不到。
   - 再把用户环境变量 `HERMES_HOME` 设成同一路径。
   - 中转站配成 `model.provider: custom` 和 `model.base_url`，key 放进 `$HERMES_HOME/.env`，`model.key_env` 指向它。
-- 接别的 CLI（opencode、qwen 等）：在 `profiles.local.json`（不进 git）里登记一个 `"engine": "cmd"` 的组合。`argv` 里可以用 `{prompt}`、`{model}`、`{cwd}`、`{report}` 占位，不写 `{report}` 时以 stdout 作为报告。它没有真正的只读时写 `"modes": ["full"]`。例：`{"profiles": {"oc/deepseek": {"engine": "cmd", "model": "relay/deepseek-4.1-flash", "modes": ["full"], "argv": ["opencode", "run", "-m", "{model}", "{prompt}"]}}}`。`profiles.local.json` 里也可以覆盖 `default`、`models`、`aliases`。
+- 接别的 CLI（opencode、qwen 等）：在 `profiles.local.json`（不进 git）里登记一个 `"engine": "cmd"` 的组合。`argv` 里可以用 `{prompt}`、`{model}`、`{cwd}`、`{report}` 占位，不写 `{report}` 时以 stdout 作为报告。它没有真正的只读时写 `"modes": ["full"]`。例：`{"profiles": {"oc/deepseek": {"engine": "cmd", "model": "relay/deepseek-4.1-flash", "modes": ["full"], "argv": ["opencode", "run", "-m", "{model}", "{prompt}"]}}}`。`profiles.local.json` 里也可以覆盖 `default`、`models` 和 `aliases`。
 - Gemini CLI 自带的个人 OAuth 免费额度已经停用（报 `IneligibleTierError`），所以 Gemini 走中转站。
 
 ## 3. 写 brief
@@ -74,7 +74,7 @@ profile 就是 **`壳/模型`**：壳（引擎）负责跑 agent 循环、调工
 ## 4. 跑
 
 ```bash
-python <skill>/scripts/delegate.py run <名字> <brief.md> [--mode read|full] [--rules 项目规则.md] [--lock unity] [--timeout 30] [--quiet]
+python <skill>/scripts/delegate.py run <名字> <brief.md> [--profile <壳/模型>[,备选...]] [--mode read|full] [--rules 项目规则.md] [--lock unity] [--timeout 30] [--quiet]
 ```
 
 - `--mode read`：Codex 用 read-only 沙箱、Claude 用 plan 模式，worker 什么都写不了。适合日志排查、代码或文档审查。

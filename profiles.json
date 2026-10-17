@@ -1,5 +1,5 @@
 {
-  "default": ["codex/deepseek", "codex/gemini", "hermes/gemini"],
+  "default": "codex/deepseek",
   "models": {
     "deepseek": "deepseek-4.1-flash",
     "gemini": "gemini-3.8-flash-high",

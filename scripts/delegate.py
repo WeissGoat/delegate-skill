@@ -1,13 +1,13 @@
 """Hand a self-contained task to a cheaper worker agent and keep only its report.
 
   python delegate.py run <name> <brief.md | -> [options]     (the word `run` may be left out)
-  python delegate.py profiles                                 list engines, models, pairs, aliases, installed CLIs
-  python delegate.py probe [--profile P]                      ten-second health check of each profile in the chain
+  python delegate.py profiles                     list engines, models, registered pairs, aliases, installed CLIs
+  python delegate.py probe [--profile P,...]      ten-second health check (default: every registered pair)
 
 Options for run:
-  --profile P[,P2...]   worker chain; each P is <engine>/<model> (codex/gemini, hermes/deepseek, claude/haiku, or a
-                        full model id) or an alias. The next one is tried when one is rate limited, missing or
-                        returns nothing (default: "default" in profiles.json, or env DELEGATE_PROFILE)
+  --profile P[,P2...]   the worker, <engine>/<model> (codex/gemini, hermes/deepseek, claude/haiku, or a full model
+                        id) or an alias; default "default" in profiles.json (codex/deepseek), a single worker.
+                        With several, the next is tried when one is rate limited, missing or returns nothing.
   --mode read|full      read = sandboxed, may not write anything (log triage, code or doc review);
                         full = may run programs and write scratch files (drive a build, run a sweep). Default full.
   --rules FILE          project rules appended to the base rules; may repeat. Also read from env DELEGATE_RULES.
@@ -76,8 +76,7 @@ def load_profiles():
         extra = json.loads(local.read_text(encoding="utf-8"))
         for key in ("profiles", "models", "aliases"):
             data.setdefault(key, {}).update(extra.get(key, {}))
-        if "default" in extra:
-            data["default"] = extra["default"]
+        data["default"] = extra.get("default", data.get("default"))
     return data
 
 
@@ -105,12 +104,7 @@ def profile_for(name, data):
 
 
 def chain_for(spec, data):
-    spec = spec or os.environ.get("DELEGATE_PROFILE") or "default"
-    names = []
-    for part in spec.split(","):
-        part = part.strip()
-        names += data["default"] if part == "default" else [part]
-    return [profile_for(n, data) for n in names]
+    return [profile_for(part.strip(), data) for part in spec.split(",") if part.strip()]
 
 
 def build_command(profile, prompt, report, cwd, mode):
@@ -269,7 +263,7 @@ def run(args):
     out.mkdir(parents=True, exist_ok=True)
     timeout = float(opts.get("--timeout", ["30"])[-1]) * 60
     data = load_profiles()
-    chain = chain_for(opts.get("--profile", [None])[-1], data)
+    chain = chain_for(opts.get("--profile", [data.get("default", "codex/deepseek")])[-1], data)
 
     brief = sys.stdin.buffer.read().decode("utf-8") if brief_arg == "-" else Path(brief_arg).read_text(encoding="utf-8")
     rule_files = opts.get("--rules", []) + [p for p in os.environ.get("DELEGATE_RULES", "").split(os.pathsep) if p]
@@ -372,7 +366,7 @@ def run(args):
 
 def profiles(_args):
     data = load_profiles()
-    print("default chain:", " -> ".join(data["default"]))
+    print("default:", data.get("default", "codex/deepseek"))
     print("engines (any engine runs any model: --profile <engine>/<model or model id>):")
     for engine, spec in ENGINES.items():
         found = "ok" if shutil.which(spec["exe"]) else "MISSING"
@@ -395,7 +389,7 @@ def probe(args):
     out = Path(os.environ.get("TEMP", "/tmp")) / "delegate_probe"
     out.mkdir(parents=True, exist_ok=True)
     ok = False
-    for pname, profile in chain_for(opts.get("--profile", [None])[-1], data):
+    for pname, profile in chain_for(opts.get("--profile", [",".join(data["profiles"])])[-1], data):
         stem = pname.replace("/", "_")
         report = out / f"{stem}.txt"
         report.unlink(missing_ok=True)
