@@ -1,30 +1,28 @@
 {
-  "default": ["deepseek", "gemini"],
+  "default": ["codex/deepseek", "codex/gemini", "hermes/gemini"],
+  "models": {
+    "deepseek": "deepseek-4.1-flash",
+    "gemini": "gemini-3.8-flash-high",
+    "deepseek-pro": "deepseek-v4-pro",
+    "haiku": "haiku"
+  },
   "profiles": {
-    "deepseek": {
-      "engine": "codex",
-      "model": "deepseek-4.1-flash",
-      "note": "free on the relay; the everyday worker"
-    },
-    "gemini": {
-      "engine": "codex",
-      "model": "gemini-3.8-flash-high",
+    "codex/deepseek": {"note": "free on the relay; the everyday worker"},
+    "codex/gemini": {
       "instructions": "worker_instructions.md",
-      "note": "free on the relay; needs the short system prompt"
+      "note": "Codex's own ~20k-character system prompt gets RESOURCE_EXHAUSTED from Gemini on the relay"
     },
-    "deepseek-pro": {
-      "engine": "codex",
-      "model": "deepseek-v4-pro",
-      "note": "slower, for briefs that need more reasoning"
-    },
-    "codex": {
-      "engine": "codex",
-      "note": "whatever ~/.codex/config.toml sets as the model"
-    },
-    "haiku": {
-      "engine": "claude",
-      "model": "haiku",
-      "note": "Claude Code headless; spends Claude quota"
-    }
+    "codex/deepseek-pro": {"note": "slower, for briefs that need more reasoning"},
+    "codex/default": {"note": "whatever ~/.codex/config.toml sets as the model"},
+    "claude/haiku": {"note": "Claude Code headless; spends Claude quota"},
+    "hermes/gemini": {"note": "Hermes Agent with the relay as its custom provider; full mode only"}
+  },
+  "aliases": {
+    "deepseek": "codex/deepseek",
+    "gemini": "codex/gemini",
+    "deepseek-pro": "codex/deepseek-pro",
+    "codex": "codex/default",
+    "haiku": "claude/haiku",
+    "hermes": "hermes/gemini"
   }
 }

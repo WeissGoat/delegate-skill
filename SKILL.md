@@ -1,6 +1,6 @@
 ---
 name: delegate
-description: Hand a long, mechanical, well-specified task to a cheaper worker agent (Codex running DeepSeek or Gemini flash on the user's relay, Claude Haiku headless, or any other headless CLI) and read back only its report, so the lead agent saves tokens and keeps its context clean. Use for build or app walkthroughs driven by a command tool, simulation and parameter sweeps, test-failure and log triage, config or doc consistency checks, broad read-only code searches with a verdict, and re-running a self-check after a fix. Not for design or feel judgments, work that needs the lead's conversation context, or anything a single command answers.
+description: Hand a long, mechanical, well-specified task to a cheaper worker agent (an engine/model pair: Codex or Hermes Agent running DeepSeek or Gemini flash on the user's relay, Claude Haiku headless, or any other headless CLI) and read back only its report, so the lead agent saves tokens and keeps its context clean. Use for build or app walkthroughs driven by a command tool, simulation and parameter sweeps, test-failure and log triage, config or doc consistency checks, broad read-only code searches with a verdict, and re-running a self-check after a fix. Not for design or feel judgments, work that needs the lead's conversation context, or anything a single command answers.
 ---
 
 # 派活给廉价 worker
@@ -23,23 +23,42 @@ description: Hand a long, mechanical, well-specified task to a cheaper worker ag
 ## 2. 选 worker
 
 ```bash
-python <skill>/scripts/delegate.py profiles     # 列出 profile、CLI 在不在
-python <skill>/scripts/delegate.py probe        # 每个 profile 发一句话，看谁现在能用（约 10–60 秒）
+python <skill>/scripts/delegate.py profiles     # 列出引擎、模型、登记的组合、别名，以及 CLI 在不在
+python <skill>/scripts/delegate.py probe        # 默认链上每个组合发一句话，看谁现在能用（约 10–60 秒）
 ```
 
-默认链是 `deepseek,gemini`：先用 DeepSeek，遇到 429、CLI 缺失或没有回答时自动换下一个。两者都走 Codex，在用户的中转站上免费。
+profile 就是 **`壳/模型`**：壳（引擎）负责跑 agent 循环、调工具，模型负责想。两者独立，任意组合：
 
-| profile | 特点（2026-10-17 同一份 brief 实测） | 什么时候用 |
+- **引擎**是内置的：`codex`、`claude`、`hermes`，脚本知道各自的命令行、只读怎么开、报告从哪拿。别的 CLI 用 `cmd` 引擎（见下）。
+- **模型**写短名（`deepseek`、`gemini`、`deepseek-pro`、`haiku`，在 `profiles.json` 的 `models` 里）或完整 id，例如 `--profile hermes/gemini-3.8-flash-high`、`--profile codex/some-new-model`，不用先登记。
+- `profiles.json` 的 `profiles` 只登记**某个组合需要的特殊处理**，例如 `codex/gemini` 要换短系统提示。
+- 旧名字是别名：`deepseek`=`codex/deepseek`，`gemini`=`codex/gemini`，`deepseek-pro`，`codex`=`codex/default`（用 Codex 配置里的模型），`haiku`=`claude/haiku`，`hermes`=`hermes/gemini`。
+
+默认链 `codex/deepseek → codex/gemini → hermes/gemini`：遇到 429、CLI 缺失或没有回答时换下一个。失败有两类，换法不同：
+
+- **模型那边**（中转站限流、额度）：换模型，所以第二个是同一个壳换 Gemini。
+- **壳本身**（Codex 升级坏了、没装）：换壳，所以最后一个连壳带模型一起换。
+
+都在用户的中转站上免费。
+
+| 组合 | 特点（2026-10-17 实测） | 什么时候用 |
 |---|---|---|
-| `deepseek`（deepseek-4.1-flash） | 快：只读核对 88 秒、8 次 shell 调用，命令会合并着跑；对含糊的地方会讨论口径；数字偶尔给概数（"10+"） | 默认。走查、复跑、日志排查、扫参 |
-| `gemini`（gemini-3.8-flash-high） | 慢：同一份核对 416 秒、41 次 shell 调用，一条一条地查；更穷举、更字面，计数精确，还多查了 brief 没点名的路径 | 要逐项穷举、精确计数的清单核对；DeepSeek 结论可疑时做第二意见；DeepSeek 不可用时兜底 |
-| `deepseek-pro` | 推理更多，更慢 | brief 需要多步推理 |
-| `haiku` | Claude Code headless，花 Claude 额度 | 别的都不能用时 |
+| `codex/deepseek` | 快：同一份只读核对 88 秒、8 次 shell 调用，命令会合并着跑；对含糊的地方会讨论口径；数字偶尔给概数（"10+"） | 默认。走查、复跑、日志排查、扫参 |
+| `codex/gemini` | 慢：同一份核对 416 秒、41 次 shell 调用，一条一条地查；更穷举、更字面，计数精确，还多查了 brief 没点名的路径 | 要逐项穷举、精确计数的清单核对；DeepSeek 结论可疑时做第二意见 |
+| `codex/deepseek-pro` | 推理更多，更慢 | brief 需要多步推理 |
+| `claude/haiku` | Claude Code headless，花 Claude 额度 | 别的都不能用时 |
+| `hermes/gemini`、`hermes/deepseek` | Hermes Agent。**只有完整模式**：它只能按工具集选工具，`file` 工具集读写绑在一起，`--mode read` 时自动跳过 | Codex 本身出问题时兜底 |
 
-- **两个都不能判断图片。** 同一张截图，两者都说"看到了"，却各自编出了不存在的按钮。看画面的结论由主 agent 自己看截图得出（640 宽很省 token），worker 只负责截图、给出路径，事实从文字输出（`Describe` 之类）里拿。
+- **模型都不能判断图片。** 同一张截图，DeepSeek 和 Gemini 都说"看到了"，却各自编出了不存在的按钮。看画面的结论由主 agent 自己看截图得出（640 宽很省 token），worker 只负责截图、给出路径，事实从文字输出（`Describe` 之类）里拿。
 - 同一份只读任务可以同时派给两个模型交叉核对，结论不一致的地方就是要你亲自抽查的地方。
-- Gemini profile 带了 `"instructions": "worker_instructions.md"`，用一段短的系统提示替换 Codex 自带的约 2 万字系统提示。原因：中转站上的 Gemini 一收到 Codex 那段提示就回 `RESOURCE_EXHAUSTED`（429），之后整个凭据池冷却约 40 秒；同样的任务换成短提示就正常。别的模型遇到"小请求正常、Codex 请求 429"时，也可以试这个字段。
-- 接新的 harness（opencode、qwen 等）：在 `profiles.local.json`（不进 git）里加一个 `engine: "cmd"` 的 profile，`argv` 里用 `{prompt}`、`{model}`、`{cwd}`、`{report}` 占位；不写 `{report}` 时以 stdout 作为报告。例：`{"profiles": {"oc": {"engine": "cmd", "model": "relay/deepseek-4.1-flash", "argv": ["opencode", "run", "-m", "{model}", "{prompt}"]}}}`。
+- `codex/gemini` 带了 `"instructions": "worker_instructions.md"`，用一段短的系统提示替换 Codex 自带的约 2 万字系统提示。原因：中转站上的 Gemini 一收到 Codex 那段提示就回 `RESOURCE_EXHAUSTED`（429），之后整个凭据池冷却约 40 秒；同样的任务换成短提示就正常。Hermes 自带的提示短，不需要。别的组合遇到"小请求正常、经 Codex 的请求 429"时，也可以试这个字段（只对 codex 引擎有效）。
+- 只读必须是壳真的拦得住写入，只靠提示词说"别改"不算。引擎没有只读时，脚本跳过它，并在页脚写明。
+- Hermes 的安装和配置：
+  - Windows 上用官方 `install.ps1`。
+  - 从 Claude 桌面版里装时要加 `-HermesHome C:\Users\<你>\.hermes`。原因：桌面版是 MSIX 应用，它启动的进程写进 `AppData\Local` 的东西会被重定向到应用自己的目录，装完在应用外找不到。
+  - 再把用户环境变量 `HERMES_HOME` 设成同一路径。
+  - 中转站配成 `model.provider: custom` 和 `model.base_url`，key 放进 `$HERMES_HOME/.env`，`model.key_env` 指向它。
+- 接别的 CLI（opencode、qwen 等）：在 `profiles.local.json`（不进 git）里登记一个 `"engine": "cmd"` 的组合。`argv` 里可以用 `{prompt}`、`{model}`、`{cwd}`、`{report}` 占位，不写 `{report}` 时以 stdout 作为报告。它没有真正的只读时写 `"modes": ["full"]`。例：`{"profiles": {"oc/deepseek": {"engine": "cmd", "model": "relay/deepseek-4.1-flash", "modes": ["full"], "argv": ["opencode", "run", "-m", "{model}", "{prompt}"]}}}`。`profiles.local.json` 里也可以覆盖 `default`、`models`、`aliases`。
 - Gemini CLI 自带的个人 OAuth 免费额度已经停用（报 `IneligibleTierError`），所以 Gemini 走中转站。
 
 ## 3. 写 brief

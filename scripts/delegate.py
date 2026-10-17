@@ -1,11 +1,12 @@
 """Hand a self-contained task to a cheaper worker agent and keep only its report.
 
   python delegate.py run <name> <brief.md | -> [options]     (the word `run` may be left out)
-  python delegate.py profiles                                 list profiles and whether their CLI is installed
+  python delegate.py profiles                                 list engines, models, pairs, aliases, installed CLIs
   python delegate.py probe [--profile P]                      ten-second health check of each profile in the chain
 
 Options for run:
-  --profile P[,P2...]   worker profile chain; the next one is tried when a profile is rate limited, missing or
+  --profile P[,P2...]   worker chain; each P is <engine>/<model> (codex/gemini, hermes/deepseek, claude/haiku, or a
+                        full model id) or an alias. The next one is tried when one is rate limited, missing or
                         returns nothing (default: "default" in profiles.json, or env DELEGATE_PROFILE)
   --mode read|full      read = sandboxed, may not write anything (log triage, code or doc review);
                         full = may run programs and write scratch files (drive a build, run a sweep). Default full.
@@ -58,15 +59,49 @@ MODE_RULES = {
 
 # ---------- profiles ----------
 
+# A profile is "<engine>/<model>": the harness that runs the worker and the model it runs. Engines are built in
+# and know their own flags; "cmd" is any other headless CLI, described by an argv template in profiles.json.
+ENGINES = {
+    "codex": {"exe": "codex", "modes": ("read", "full")},
+    "claude": {"exe": "claude", "modes": ("read", "full")},
+    # Hermes chooses tools only by toolset, and its "file" toolset both reads and writes, so it has no read mode.
+    "hermes": {"exe": "hermes", "modes": ("full",)},
+}
+
+
 def load_profiles():
     data = json.loads((SKILL / "profiles.json").read_text(encoding="utf-8"))
     local = SKILL / "profiles.local.json"  # per-machine additions and overrides, not in git
     if local.exists():
         extra = json.loads(local.read_text(encoding="utf-8"))
-        data["profiles"].update(extra.get("profiles", {}))
+        for key in ("profiles", "models", "aliases"):
+            data.setdefault(key, {}).update(extra.get(key, {}))
         if "default" in extra:
             data["default"] = extra["default"]
     return data
+
+
+def profile_for(name, data):
+    """Settings for one "<engine>/<model>" name (or an alias of one). A profiles.json entry only adds what that pair
+    needs; without one, any built-in engine runs any model: a short name from "models", else the id as given."""
+    name = data.get("aliases", {}).get(name, name)
+    engine, _, model = name.partition("/")
+    short = {v: k for k, v in data.get("models", {}).items()}.get(model)
+    if short and f"{engine}/{short}" in data["profiles"]:  # codex/gemini-3.8-flash-high is codex/gemini
+        name, model = f"{engine}/{short}", short
+    profile = dict(data["profiles"].get(name, {}))
+    profile.setdefault("engine", engine)
+    if profile["engine"] == "cmd":
+        if "argv" not in profile:
+            sys.exit(f"Profile {name} uses engine cmd but has no argv.")
+    elif profile["engine"] not in ENGINES:
+        sys.exit(f"Unknown profile {name}: engines are {', '.join(ENGINES)} or cmd (see profiles.json), "
+                 f"aliases are {', '.join(data.get('aliases', {}))}.")
+    if "model" not in profile:
+        model = data.get("models", {}).get(model, model)
+        profile["model"] = None if model in ("", "default") else model
+    profile.setdefault("modes", list(ENGINES.get(profile["engine"], {}).get("modes", MODE_RULES)))
+    return name, profile
 
 
 def chain_for(spec, data):
@@ -75,14 +110,18 @@ def chain_for(spec, data):
     for part in spec.split(","):
         part = part.strip()
         names += data["default"] if part == "default" else [part]
-    unknown = [n for n in names if n not in data["profiles"]]
-    if unknown:
-        sys.exit(f"Unknown profile(s): {', '.join(unknown)}. Known: {', '.join(data['profiles'])}")
-    return names
+    return [profile_for(n, data) for n in names]
 
 
 def build_command(profile, prompt, report, cwd, mode):
     engine, model = profile["engine"], profile.get("model")
+    if engine == "hermes":
+        # The model's provider comes from Hermes's own config (e.g. model.provider: custom pointing at a relay).
+        cmd = ["hermes", "chat", "--oneshot", "-Q", "-t", profile.get("toolsets", "terminal,file"),
+               "--max-turns", str(profile.get("max_turns", 150))]
+        if model:
+            cmd += ["-m", model]
+        return cmd + ["-q", prompt]  # -Q prints only the final answer, which becomes the report
     if engine == "codex":
         cmd = ["codex", "exec", "-C", str(cwd), "--skip-git-repo-check", "--ephemeral", "-o", str(report),
                "-s", "read-only" if mode == "read" else "danger-full-access"]
@@ -239,7 +278,8 @@ def run(args):
 
     stem = f"{time.strftime('%Y%m%d_%H%M%S')}_{name}"
     report, log = out / f"{stem}.md", out / f"{stem}.log"
-    if git(cwd, "check-ignore", "-q", str(report)) is None and git(cwd, "rev-parse", "--git-dir"):
+    inside = out == cwd or cwd in out.parents  # a folder outside the repo cannot end up in commits
+    if inside and git(cwd, "check-ignore", "-q", str(report)) is None and git(cwd, "rev-parse", "--git-dir"):
         print(f"WARNING: {out} is not git-ignored; reports may end up in commits.", file=sys.stderr)
 
     lock = None
@@ -263,8 +303,11 @@ def run(args):
         before = snapshot(cwd)
         started, deadline = time.time(), time.time() + timeout
         attempts, timed_out = [], False
-        for pname in chain:
-            profile = data["profiles"][pname]
+        for pname, profile in chain:
+            if mode not in profile["modes"]:
+                # e.g. a harness that cannot take away its own write tools; a rule in the prompt is not a sandbox
+                attempts.append(f"{pname}: skipped, has no enforced {mode} mode")
+                continue
             cmd = resolve(build_command(profile, prompt, report, cwd, mode))
             if not cmd:
                 attempts.append(f"{pname}: {profile['engine']} CLI not found")
@@ -280,7 +323,7 @@ def run(args):
                 if stdout.strip() and code == 0:
                     report.write_text(stdout, encoding="utf-8")
             answered = report.exists() and report.read_text(encoding="utf-8", errors="replace").strip()
-            attempts.append(f"{pname} ({profile['engine']} {profile.get('model') or 'default'}): exit={code} "
+            attempts.append(f"{pname} ({profile.get('model') or 'default model'}): exit={code} "
                             f"{int(time.time() - t0)}s" + (" TIMEOUT" if timed_out else ""))
             if answered or timed_out:
                 break
@@ -329,11 +372,19 @@ def run(args):
 
 def profiles(_args):
     data = load_profiles()
-    print("default chain:", ",".join(data["default"]))
-    for name, p in data["profiles"].items():
-        exe = {"codex": "codex", "claude": "claude"}.get(p["engine"]) or p.get("argv", ["?"])[0]
-        found = "ok" if shutil.which(exe) else "MISSING " + exe
-        print(f"  {name:14} {p['engine']:6} {p.get('model') or 'default':26} {found}  {p.get('note', '')}")
+    print("default chain:", " -> ".join(data["default"]))
+    print("engines (any engine runs any model: --profile <engine>/<model or model id>):")
+    for engine, spec in ENGINES.items():
+        found = "ok" if shutil.which(spec["exe"]) else "MISSING"
+        print(f"  {engine:8} {'/'.join(spec['modes']):9} {found}")
+    print("models:", ", ".join(f"{k}={v}" for k, v in data.get("models", {}).items()))
+    print("registered pairs:")
+    for name in data["profiles"]:
+        _, p = profile_for(name, data)
+        exe = ENGINES.get(p["engine"], {}).get("exe") or p.get("argv", ["?"])[0]
+        found = "" if shutil.which(exe) else f"  MISSING {exe}"
+        print(f"  {name:20} {p.get('model') or 'default':24} {'/'.join(p['modes']):9} {p.get('note', '')}{found}")
+    print("aliases:", ", ".join(f"{k}={v}" for k, v in data.get("aliases", {}).items()))
     return 0
 
 
@@ -344,17 +395,19 @@ def probe(args):
     out = Path(os.environ.get("TEMP", "/tmp")) / "delegate_probe"
     out.mkdir(parents=True, exist_ok=True)
     ok = False
-    for pname in chain_for(opts.get("--profile", [None])[-1], data):
-        report = out / f"{pname}.txt"
+    for pname, profile in chain_for(opts.get("--profile", [None])[-1], data):
+        stem = pname.replace("/", "_")
+        report = out / f"{stem}.txt"
         report.unlink(missing_ok=True)
-        cmd = resolve(build_command(data["profiles"][pname], "Reply with exactly: READY", report, cwd, "read"))
+        mode = "read" if "read" in profile["modes"] else "full"
+        cmd = resolve(build_command(profile, "Reply with exactly: READY", report, cwd, mode))
         if not cmd:
             print(f"{pname}: CLI not found")
             continue
         t0 = time.time()
-        code, stdout, timed_out = run_worker(cmd, cwd, out / f"{pname}.log", time.time() + 120)
+        code, stdout, timed_out = run_worker(cmd, cwd, out / f"{stem}.log", time.time() + 120)
         answer = report.read_text(encoding="utf-8").strip() if report.exists() else stdout.strip()
-        reason = "" if "READY" in answer else (RETRYABLE.search((out / f"{pname}.log").read_text(
+        reason = "" if "READY" in answer else (RETRYABLE.search((out / f"{stem}.log").read_text(
             encoding="utf-8", errors="replace")[-3000:]) or [""])[0]
         print(f"{pname}: {'ready' if 'READY' in answer else 'FAILED ' + str(reason or 'exit=' + str(code))}"
               f" {int(time.time() - t0)}s")
