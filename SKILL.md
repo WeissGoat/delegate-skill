@@ -27,10 +27,19 @@ python <skill>/scripts/delegate.py profiles     # 列出 profile、CLI 在不在
 python <skill>/scripts/delegate.py probe        # 每个 profile 发一句话，看谁现在能用（约 10–60 秒）
 ```
 
-- 默认链 `deepseek,gemini`：DeepSeek 4.1 flash 为主；遇到 429、CLI 缺失或没有回答时自动换下一个。两者都走 Codex（用户中转站上免费）。
-- `--profile deepseek-pro`：brief 需要多步推理时用（慢一些）。
-- `--profile haiku`：Claude Code headless，花 Claude 额度，只在别的都不能用时用。
-- 加新的 harness（opencode、qwen 等）：在 `profiles.local.json`（不进 git）里加一个 `engine: "cmd"` 的 profile，`argv` 里用 `{prompt}`、`{model}`、`{cwd}`、`{report}` 占位；不写 `{report}` 的话以 stdout 作报告。例：`{"profiles": {"oc": {"engine": "cmd", "model": "relay/deepseek-4.1-flash", "argv": ["opencode", "run", "-m", "{model}", "{prompt}"]}}}`。
+默认链是 `deepseek,gemini`：先用 DeepSeek，遇到 429、CLI 缺失或没有回答时自动换下一个。两者都走 Codex，在用户的中转站上免费。
+
+| profile | 特点（2026-10-17 同一份 brief 实测） | 什么时候用 |
+|---|---|---|
+| `deepseek`（deepseek-4.1-flash） | 快：只读核对 88 秒、8 次 shell 调用，命令会合并着跑；对含糊的地方会讨论口径；数字偶尔给概数（"10+"） | 默认。走查、复跑、日志排查、扫参 |
+| `gemini`（gemini-3.8-flash-high） | 慢：同一份核对 416 秒、41 次 shell 调用，一条一条地查；更穷举、更字面，计数精确，还多查了 brief 没点名的路径 | 要逐项穷举、精确计数的清单核对；DeepSeek 结论可疑时做第二意见；DeepSeek 不可用时兜底 |
+| `deepseek-pro` | 推理更多，更慢 | brief 需要多步推理 |
+| `haiku` | Claude Code headless，花 Claude 额度 | 别的都不能用时 |
+
+- **两个都不能判断图片。** 同一张截图，两者都说"看到了"，却各自编出了不存在的按钮。看画面的结论由主 agent 自己看截图得出（640 宽很省 token），worker 只负责截图、给出路径，事实从文字输出（`Describe` 之类）里拿。
+- 同一份只读任务可以同时派给两个模型交叉核对，结论不一致的地方就是要你亲自抽查的地方。
+- Gemini profile 带了 `"instructions": "worker_instructions.md"`，用一段短的系统提示替换 Codex 自带的约 2 万字系统提示。原因：中转站上的 Gemini 一收到 Codex 那段提示就回 `RESOURCE_EXHAUSTED`（429），之后整个凭据池冷却约 40 秒；同样的任务换成短提示就正常。别的模型遇到"小请求正常、Codex 请求 429"时，也可以试这个字段。
+- 接新的 harness（opencode、qwen 等）：在 `profiles.local.json`（不进 git）里加一个 `engine: "cmd"` 的 profile，`argv` 里用 `{prompt}`、`{model}`、`{cwd}`、`{report}` 占位；不写 `{report}` 时以 stdout 作为报告。例：`{"profiles": {"oc": {"engine": "cmd", "model": "relay/deepseek-4.1-flash", "argv": ["opencode", "run", "-m", "{model}", "{prompt}"]}}}`。
 - Gemini CLI 自带的个人 OAuth 免费额度已经停用（报 `IneligibleTierError`），所以 Gemini 走中转站。
 
 ## 3. 写 brief
@@ -67,7 +76,7 @@ python <skill>/scripts/delegate.py run <名字> <brief.md> [--mode read|full] [-
 ## 5. 读报告
 
 - 默认把整份报告打印出来；`--quiet` 只打印路径和结论一行，需要细节时再读文件。
-- **抽查**：挑最关键的一条发现，自己跑一遍它给的命令或打开它引的文件行，对得上再采信。廉价模型偶尔会把"推测"写成"看到"。
+- **抽查**：挑最关键的一条发现，自己跑一遍它给的命令或打开它引的文件行，对得上再采信。廉价模型偶尔会把"推测"写成"看到"，对图片尤其如此。
 - 结论是 `无法完成` 时先看"没做到的"和页脚：是 brief 写得不清楚（改 brief 重派），是环境问题（自己修），还是所有 profile 都 429（稍后再派，或换 `--profile`）。
 - 不把 worker 的结论原样转述成"已验证"：向用户报告时写明是 worker 查的、你抽查了哪条。
 

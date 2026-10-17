@@ -43,7 +43,8 @@ Rules:
 - Stay inside the brief. If something blocks you, stop and report it instead of working around it or guessing.
 - Every finding needs evidence: the exact command or file:line, and a short excerpt of what it printed or says.
   Say plainly what you observed and what you only infer.
-- Screenshots, if any, go under {out} with absolute paths; say in words what you saw in them.
+- Screenshots, if any, go under {out} with absolute paths. List their paths in the answer but make no claims
+  about what they show unless the brief asks; the lead agent looks at them itself. Get facts from text output.
 - Do not narrate your process. The final answer is at most about 80 lines, in Chinese, in this shape:
   结论: PASS / FAIL / 无法完成 (one line why)
   发现: numbered list; each item = what you saw, the evidence, how sure you are (高/中/低).
@@ -87,6 +88,11 @@ def build_command(profile, prompt, report, cwd, mode):
                "-s", "read-only" if mode == "read" else "danger-full-access"]
         if model:
             cmd += ["-m", model]
+        if profile.get("instructions"):
+            # Replaces Codex's own ~20k-character system prompt; Gemini on the relay answers that prompt with
+            # RESOURCE_EXHAUSTED, while the same task under a short prompt works.
+            path = (SKILL / profile["instructions"]).as_posix()
+            cmd += ["-c", f"model_instructions_file='{path}'"]
         for key, value in profile.get("config", {}).items():
             cmd += ["-c", f"{key}={value}"]
         return cmd + [prompt]

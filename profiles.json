@@ -9,7 +9,8 @@
     "gemini": {
       "engine": "codex",
       "model": "gemini-3.8-flash-high",
-      "note": "free on the relay; often 429, so it is the fallback"
+      "instructions": "worker_instructions.md",
+      "note": "free on the relay; needs the short system prompt"
     },
     "deepseek-pro": {
       "engine": "codex",
